@@ -68,7 +68,15 @@ async def async_setup_entry(
 
 
 class FlexomCover(CoordinatorEntity, CoverEntity):
-    """Representation of a Flexom roller shutter."""
+    """Representation of a Flexom roller shutter.
+
+    Position only - no is_opening/is_closing. There's no "movement
+    finished" event on this API (confirmed live, docs/ubiant/OBSERVED.md:
+    "progressive" is a static capability flag, not a moving/stopped
+    indicator), so a moving-direction indicator can only ever be inferred
+    heuristically from successive position readings - tried and dropped as
+    unreliable in practice.
+    """
 
     _attr_device_class = CoverDeviceClass.SHUTTER
     _attr_supported_features = CoverEntityFeature.SET_POSITION
@@ -143,11 +151,11 @@ class FlexomCover(CoordinatorEntity, CoverEntity):
         """No polling needed since we're using the coordinator."""
         return False
 
-    async def async_open_cover(self, **kwargs: Any) -> None:
+    async def async_open_cover(self, **_kwargs: Any) -> None:
         """Open the cover fully."""
         await self.async_set_cover_position(position=100)
 
-    async def async_close_cover(self, **kwargs: Any) -> None:
+    async def async_close_cover(self, **_kwargs: Any) -> None:
         """Close the cover fully."""
         await self.async_set_cover_position(position=0)
 
@@ -160,10 +168,7 @@ class FlexomCover(CoordinatorEntity, CoverEntity):
         _LOGGER.debug("Setting cover %s to position %s", self._name, position)
         success = await self.hemis_client.set_cover_position(self._it_id, self._id, position)
 
-        if success:
-            self._position = position
-            self.async_write_ha_state()
-        else:
+        if not success:
             _LOGGER.error("Failed to set position for cover %s", self._name)
 
     @callback

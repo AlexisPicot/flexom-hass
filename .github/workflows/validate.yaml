@@ -17,3 +17,11 @@ jobs:
         uses: "hacs/action@main"
         with:
           category: "integration"
+          # "brands" requires a PR to the separate home-assistant/brands repo
+          # (custom_integrations/flexom/icon.png) - not something this repo's
+          # own files can satisfy. Confirmed live (2026-07-23): the "flexom"
+          # domain has no entry there yet (neither integrations/flexom nor
+          # custom_integrations/flexom), despite stray cached brand images
+          # locally in this dev instance. Remove this ignore once that PR is
+          # submitted and merged upstream.
+          ignore: "brands"
