@@ -1,5 +1,9 @@
 """Hemisphere API client."""
+import base64
+import binascii
+import json
 import logging
+import time
 from typing import Any, Dict, Optional
 
 import aiohttp
@@ -14,6 +18,24 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# How long before actual expiry to proactively re-authenticate.
+TOKEN_REFRESH_MARGIN_SECONDS = 30 * 60
+
+
+def _decode_jwt_expiry(token: str) -> Optional[float]:
+    """Return a JWT's "exp" claim (epoch seconds), or None if undecodable.
+
+    No signature verification - we only need our own just-issued token's
+    expiry to schedule a refresh, not to validate authenticity.
+    """
+    try:
+        payload_b64 = token.split(".")[1]
+        padding = "=" * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + padding))
+        return payload.get("exp")
+    except (IndexError, ValueError, binascii.Error, json.JSONDecodeError):
+        return None
+
 
 class HemisphereApiClient:
     """Client for interacting with the Hemisphere API."""
@@ -26,9 +48,37 @@ class HemisphereApiClient:
         self.hemis_base_url: Optional[str] = None
         self.hemis_stomp_url: Optional[str] = None
         self.hemis_token: Optional[str] = None
+        self._username: Optional[str] = None
+        self._password: Optional[str] = None
+        self._token_expires_at: Optional[float] = None
+
+    def is_token_expiring_soon(self) -> bool:
+        """Return True if the current token is expired or close to it.
+
+        Confirmed live (2026-07-23): the Hemisphere JWT is valid for 12h
+        (iat/exp 43200s apart) - there was previously no refresh logic at
+        all, so any long-running Home Assistant instance would eventually
+        start failing REST calls/WebSocket reconnects with a silently-stale
+        token.
+        """
+        if self._token_expires_at is None:
+            return False  # unknown expiry (undecodable token) - don't force
+        return time.time() >= self._token_expires_at - TOKEN_REFRESH_MARGIN_SECONDS
+
+    async def ensure_authenticated(self) -> bool:
+        """Re-authenticate if the current token is expired/expiring soon."""
+        if not self.is_token_expiring_soon():
+            return True
+        if not self._username or not self._password:
+            _LOGGER.warning("Cannot refresh Hemisphere token: no stored credentials")
+            return False
+        _LOGGER.info("Hemisphere token expiring soon, re-authenticating")
+        return await self.authenticate(self._username, self._password)
 
     async def authenticate(self, username: str, password: str) -> bool:
         """Authenticate with hemisphere API."""
+        self._username = username
+        self._password = password
         try:
             _LOGGER.debug("Authenticating with Hemisphere API")
             
@@ -61,11 +111,19 @@ class HemisphereApiClient:
                             
                         data = await response.json()
                         self.hemisphere_token = data.get("token")
-                        
+
                         if not self.hemisphere_token:
                             _LOGGER.error("No token in response")
                             return False
-                            
+
+                        self._token_expires_at = _decode_jwt_expiry(self.hemisphere_token)
+                        if self._token_expires_at:
+                            _LOGGER.debug(
+                                "Token expires at %s (in %.0f minutes)",
+                                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self._token_expires_at)),
+                                (self._token_expires_at - time.time()) / 60,
+                            )
+
                         # Token is valid, now get buildings info
                         return await self._get_buildings_info()
                         
@@ -183,14 +241,18 @@ class HemisphereApiClient:
                             )
                             return False
                             
-                        # Get the Hemis token - this is the key for API access
-                        self.hemis_token = building.get("hemis_token")
-                        if self.hemis_token:
-                            _LOGGER.debug("Got Hemis token: %s...", self.hemis_token[:10])
-                        else:
-                            _LOGGER.warning("No Hemis token in building info, API calls may fail")
-                            # We'll keep using the Hemisphere token, but it might not work
-                            self.hemis_token = self.hemisphere_token
+                        # Confirmed live (2026-07-23): there is no "hemis_token"
+                        # field in the /buildings/mine/infos response at all -
+                        # this used to silently fall back on every single
+                        # startup, firing a "may fail" warning that never
+                        # actually indicated a problem. There IS an
+                        # "authorizationToken" field, but it's NOT a valid
+                        # bearer for Hemis REST calls either (tested directly:
+                        # 401 Unauthorized) - the Hemisphere JWT
+                        # (hemisphere_token) is the one token that actually
+                        # works for both Hemis REST calls and the STOMP
+                        # passcode, so that's what's used here directly.
+                        self.hemis_token = self.hemisphere_token
                         
                         # Log the URLs for debugging
                         _LOGGER.debug("Hemisphere token: %s...", self.hemisphere_token[:10])

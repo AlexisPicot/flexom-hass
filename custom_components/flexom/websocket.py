@@ -15,7 +15,6 @@ from .const import STOMP_TOPIC_DATA
 
 _LOGGER = logging.getLogger(__name__)
 
-FACTOR_TYPES = ["BRI", "BRIEXT", "TMP"]
 EVENT_TYPES = [
     "ACTUATOR_TARGET_STATE",
     "ACTUATOR_HARDWARE_STATE",
@@ -26,7 +25,8 @@ EVENT_TYPES = [
     "FACTOR_CURRENT_STATE",
     "OBJECTIVE_STATE",
     "DATA_PROVIDER",
-    "ENTITY_MANAGEMENT"
+    "NEW_DATA",  # same payload shape as DATA_PROVIDER per docs/ubiant/ws.md, but this is the "type" actually sent by the server today
+    "ENTITY_MANAGEMENT",
 ]
 
 class HemisWebSocketClient:
@@ -63,10 +63,13 @@ class HemisWebSocketClient:
             parsed_url = urllib.parse.urlparse(self.stomp_url)
             _LOGGER.debug("Connecting to WebSocket URL: %s", self.stomp_url)
             
-            # Explicitly create SSL context for wss:// URLs
+            # Explicitly create SSL context for wss:// URLs. Offloaded to the
+            # executor: ssl.create_default_context() does blocking file I/O
+            # (loading system CA certs) and HA logs a warning if called
+            # directly on the event loop.
             ssl_context = None
             if parsed_url.scheme == "wss":
-                ssl_context = ssl.create_default_context()
+                ssl_context = await self.hass.async_add_executor_job(ssl.create_default_context)
                 _LOGGER.debug("Created SSL context for secure WebSocket connection")
             
             # Use WebSocketApp from websockets library
@@ -220,31 +223,31 @@ class HemisWebSocketClient:
                             if len(parts) < 2:
                                 _LOGGER.warning("Invalid MESSAGE format, no body found")
                                 continue
-                                
-                            body = parts[1].rstrip('\x00')
+
+                            # STOMP frames are NUL-terminated. Cut there rather
+                            # than rstrip('\x00'): when a trailing newline
+                            # follows the NUL (as it does here), rstrip
+                            # strips nothing (the last char isn't '\x00'),
+                            # leaving the NUL byte in the string. Truncating
+                            # at the first "}" instead "worked around" that
+                            # for flat single-object bodies, but silently
+                            # mangled any message whose JSON has a nested
+                            # object before the real end (e.g.
+                            # ACTUATOR_TARGET_STATE/ACTUATOR_CURRENT_STATE,
+                            # whose "value" is itself an object).
+                            body = parts[1].split('\x00', 1)[0]
                             try:
-                                # Clean up JSON body
-                                if "}" in body:
-                                    # Find the end of the first JSON object (valid content)
-                                    json_end = body.find("}") + 1
-                                    if json_end > 0:
-                                        cleaned_body = body[:json_end]
-                                        _LOGGER.debug("Parsing JSON body: %s", cleaned_body[:100] + "..." if len(cleaned_body) > 100 else cleaned_body)
-                                        data = json.loads(cleaned_body)
-                                        
-                                        # Only process known event types
-                                        if "type" in data and data["type"] in EVENT_TYPES:
-                                            _LOGGER.debug("Processing message of type: %s", data["type"])
-                                            # Call the callback directly without await
-                                            self.message_callback(data)
-                                        else:
-                                            _LOGGER.debug("Ignoring unknown event type: %s", data.get("type"))
-                                    else:
-                                        _LOGGER.warning("Could not find JSON end marker in body")
+                                data = json.loads(body)
+
+                                # Only process known event types
+                                if "type" in data and data["type"] in EVENT_TYPES:
+                                    _LOGGER.debug("Processing message of type: %s", data["type"])
+                                    # Call the callback directly without await
+                                    self.message_callback(data)
                                 else:
-                                    _LOGGER.warning("No JSON object found in message body: %s", body[:100])
+                                    _LOGGER.debug("Ignoring unknown event type: %s", data.get("type"))
                             except json.JSONDecodeError as e:
-                                _LOGGER.error("Invalid JSON received: %s - Error: %s", body[:100], str(e))
+                                _LOGGER.error("Invalid JSON received: %s - Error: %s", body[:200], str(e))
                         except Exception as e:
                             _LOGGER.error("Error processing message: %s - Error: %s", message_str[:100], str(e))
                     

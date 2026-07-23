@@ -1,13 +1,14 @@
 {
   "domain": "flexom",
   "name": "Flexom-HASS",
-  "codeowners": ["@ItsAlexousd"],
+  "codeowners": ["@AlexisPicot", "@ItsAlexousd"],
   "config_flow": true,
-  "documentation": "https://github.com/ItsAlexousd/flexom-hass",
-  "iot_class": "local_polling",
+  "documentation": "https://github.com/AlexisPicot/flexom-hass",
+  "issue_tracker": "https://github.com/AlexisPicot/flexom-hass/issues",
+  "iot_class": "cloud_push",
   "requirements": [
-    "stomper>=0.4.3", 
+    "stomper>=0.4.3",
     "websockets>=10.0"
   ],
-  "version": "0.0.1"
+  "version": "0.2.0"
 }

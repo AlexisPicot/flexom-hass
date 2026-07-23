@@ -1,0 +1,24 @@
+reconnect_websocket:
+  name: Reconnect WebSocket
+  description: >-
+    Force the Hemis WebSocket connection to reconnect. Useful if real-time
+    updates (lights, shutters, switches) have stopped arriving without the
+    integration itself reporting an error.
+
+run_diagnostic:
+  name: Run diagnostic
+  description: >-
+    Check Hemisphere authentication, fetch zones/actuators, and report
+    WebSocket connection status. Results are logged and shown as a
+    persistent notification.
+
+identify:
+  name: Identify
+  description: >-
+    Flash a Flexom light a few times so you can spot it physically, then
+    restore its original state. There's no native "identify" support in the
+    Hemis API - this only works on light entities.
+  target:
+    entity:
+      integration: flexom
+      domain: light
