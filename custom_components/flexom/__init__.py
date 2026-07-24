@@ -74,10 +74,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             ws_data_queue.append(message)
 
             _LOGGER.debug(
-                "WebSocket message: type=%s, entity_id=%s, factor=%s",
+                "WebSocket message: type=%s, entity_id=%s, factor=%s, value=%s, timestamp=%s",
                 message.get("type", "unknown"),
                 message.get("actuatorId") or message.get("itId") or message.get("zoneId") or "unknown",
                 message.get("factorId", "unknown"),
+                message.get("value", "unknown"),
+                message.get("timestamp", "unknown"),
             )
 
             coordinator.async_set_updated_data(ws_data_queue.copy())

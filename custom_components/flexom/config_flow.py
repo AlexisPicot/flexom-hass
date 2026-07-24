@@ -8,14 +8,16 @@ import aiohttp
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
+    CONF_DOUBLE_CLICK_WINDOW_MS,
     CONF_PASSWORD,
     CONF_USERNAME,
+    DEFAULT_DOUBLE_CLICK_WINDOW_MS,
     DOMAIN,
 )
 from .hemisphere import HemisphereApiClient
@@ -79,6 +81,37 @@ class FlexomConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
         )
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> "FlexomOptionsFlow":
+        """Create the options flow."""
+        return FlexomOptionsFlow()
+
+
+class FlexomOptionsFlow(config_entries.OptionsFlow):
+    """Handle Flexom options (currently: physical switch double-click window)."""
+
+    async def async_step_init(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> FlowResult:
+        """Manage the options."""
+        if user_input is not None:
+            return self.async_create_entry(data=user_input)
+
+        current = self.config_entry.options.get(
+            CONF_DOUBLE_CLICK_WINDOW_MS, DEFAULT_DOUBLE_CLICK_WINDOW_MS
+        )
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    CONF_DOUBLE_CLICK_WINDOW_MS, default=current
+                ): vol.All(vol.Coerce(int), vol.Range(min=100, max=5000)),
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)
 
 
 class InvalidAuth(HomeAssistantError):

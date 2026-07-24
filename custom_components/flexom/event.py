@@ -4,11 +4,15 @@ A wall switch press is momentary, not a persistent on/off state (that's
 exactly what triggers BRI/BRIEXT actuator changes elsewhere) - so this uses
 Home Assistant's `event` domain (built for stateless button-press-style
 events), not `switch` (which implies a durable on/off state).
+
+One `event` entity is exposed per physical switch (not one per button):
+each switch has up to 5 distinct actions, reported as different event_types
+on the same entity - see FlexomSwitchEvent's docstring.
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from homeassistant.components.event import EventEntity
 from homeassistant.config_entries import ConfigEntry
@@ -20,7 +24,12 @@ from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
 )
 
-from .const import DOMAIN, SWS_EVENT_NAMES
+from .const import (
+    CONF_DOUBLE_CLICK_WINDOW_MS,
+    DEFAULT_DOUBLE_CLICK_WINDOW_MS,
+    DOMAIN,
+    SWS_EVENT_NAMES,
+)
 from .entity_helpers import (
     assign_friendly_names,
     ensure_area_and_label,
@@ -61,9 +70,18 @@ async def async_setup_entry(
             "Interrupteur",
         )
 
+    double_click_window_ms = config_entry.options.get(
+        CONF_DOUBLE_CLICK_WINDOW_MS, DEFAULT_DOUBLE_CLICK_WINDOW_MS
+    )
+
     _LOGGER.info("Found %d physical wall switch(es)", len(switches))
     async_add_entities(
-        FlexomSwitchEvent(coordinator=coordinator, hemis_client=hemis_client, sensor=sensor)
+        FlexomSwitchEvent(
+            coordinator=coordinator,
+            hemis_client=hemis_client,
+            sensor=sensor,
+            double_click_window_ms=double_click_window_ms,
+        )
         for sensor in switches
     )
 
@@ -71,11 +89,30 @@ async def async_setup_entry(
 class FlexomSwitchEvent(CoordinatorEntity, EventEntity):
     """Representation of a Flexom physical wall switch.
 
-    Confirmed live mapping (docs/ubiant/OBSERVED.md, 2026-07-23):
-    SWS=1 light off, 2 light on, 3 shutter up, 4 shutter down, 5 interrupt.
-    This mapping describes the *function* triggered by the press, which may
-    not match physical button position 1:1 across different switch models -
-    treat it as confirmed only for the switch model actually tested.
+    Confirmed live mapping (docs/ubiant/OBSERVED.md, 2026-07-23), positional
+    (describes the physical button, not the Ubiant action wired to it -
+    that wiring is configured in the Flexom app, not something we control):
+
+        SWS=1 top_left     (wired to: light off)
+        SWS=2 bottom_left   (wired to: light on)
+        SWS=3 top_right    (wired to: shutter open)
+        SWS=4 bottom_right  (wired to: shutter closed)
+        SWS=5 stop          (both buttons on one side pressed together)
+
+    This mapping was confirmed on one switch model - physical button
+    position may not match 1:1 across different models, only the reported
+    SWS value -> slot mapping is what's actually confirmed.
+
+    Every press fires its event_type immediately, including consecutive
+    presses of the *same* button (no "only if different from before"
+    logic - the device/coordinator pipeline has no batching, confirmed
+    live). The device itself has no notion of a "double click": consecutive
+    presses of the *same* button within `double_click_window_ms` are
+    counted here and exposed as a `click_count` attribute on the event
+    (accessible in automations via `trigger.event.data.click_count`), so a
+    double/triple click can be told apart from repeated single clicks. The
+    first click is always emitted right away, at click_count=1 - detecting
+    a double-click never delays it.
     """
 
     _attr_event_types = list(SWS_EVENT_NAMES.values())
@@ -85,11 +122,13 @@ class FlexomSwitchEvent(CoordinatorEntity, EventEntity):
         hemis_client: HemisApiClient,
         coordinator: DataUpdateCoordinator,
         sensor: Dict[str, Any],
+        double_click_window_ms: int = DEFAULT_DOUBLE_CLICK_WINDOW_MS,
     ) -> None:
         """Initialize the switch event entity."""
         super().__init__(coordinator)
         self.hemis_client = hemis_client
         self.sensor = sensor
+        self._double_click_window_ms = double_click_window_ms
 
         self._id = sensor.get("id", "")
         self._it_id = sensor.get("itId", "")
@@ -97,8 +136,11 @@ class FlexomSwitchEvent(CoordinatorEntity, EventEntity):
         self._zone_id = sensor.get("zoneId", "")
         self._zone_name = sensor.get("zoneName", "")
         self._last_timestamp = 0
+        self._last_event_type: Optional[str] = None
+        self._click_count = 0
 
-        _LOGGER.debug("Initialized switch event %s (itId=%s)", self._name, self._it_id)
+        _LOGGER.debug("Initialized switch event %s (itId=%s)",
+                      self._name, self._it_id)
 
     @property
     def unique_id(self) -> str:
@@ -133,44 +175,78 @@ class FlexomSwitchEvent(CoordinatorEntity, EventEntity):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        """Handle updated data from the coordinator."""
+        """Handle every new switch press from the coordinator."""
+
         if not self.coordinator.data:
             return
 
         try:
-            # coordinator.data holds a rolling window of recent messages
-            # (see __init__.py), so without a timestamp guard the same press
-            # would keep re-firing on every later, unrelated update as long
-            # as it's still in that window.
-            for message in reversed(self.coordinator.data):
+            new_presses: list[tuple[int, int]] = []
+
+            for message in self.coordinator.data:
                 press_value = extract_switch_press(message, self._it_id)
                 if press_value is None:
                     continue
 
                 timestamp = message.get("timestamp", 0)
                 if timestamp <= self._last_timestamp:
-                    break
+                    continue
 
-                self._last_timestamp = timestamp
+                new_presses.append((timestamp, press_value))
+
+            # Toujours traiter les clics dans l'ordre réel.
+            new_presses.sort(key=lambda item: item[0])
+
+            for timestamp, press_value in new_presses:
                 event_type = SWS_EVENT_NAMES.get(press_value)
-                if event_type:
-                    self._trigger_event(event_type)
-                    self.async_write_ha_state()
-                    _LOGGER.debug(
-                        "Switch %s pressed: SWS=%s -> %s",
+                gap_ms = timestamp - self._last_timestamp
+
+                if (
+                    event_type is not None
+                    and event_type == self._last_event_type
+                    and self._last_timestamp != 0
+                    and gap_ms <= self._double_click_window_ms
+                ):
+                    self._click_count += 1
+                else:
+                    self._click_count = 1
+
+                previous_timestamp = self._last_timestamp
+                self._last_timestamp = timestamp
+                self._last_event_type = event_type
+
+                if event_type is None:
+                    _LOGGER.warning(
+                        "Switch %s: unrecognized SWS value %s",
                         self._name,
                         press_value,
-                        event_type,
                     )
-                else:
-                    _LOGGER.warning(
-                        "Switch %s: unrecognized SWS value %s", self._name, press_value
-                    )
-                break
+                    continue
+
+                self._trigger_event(
+                    event_type,
+                    {
+                        "click_count": self._click_count,
+                        "sws_value": press_value,
+                    },
+                )
+                self.async_write_ha_state()
+
+                _LOGGER.debug(
+                    "Switch press fired: entity=%s timestamp=%s previous=%s "
+                    "gap=%s event_type=%s click_count=%s",
+                    self.entity_id,
+                    timestamp,
+                    previous_timestamp,
+                    gap_ms,
+                    event_type,
+                    self._click_count,
+                )
+
         except Exception as err:
             _LOGGER.error(
                 "Error handling coordinator update for switch %s: %s",
                 self._name,
-                str(err),
+                err,
                 exc_info=True,
             )

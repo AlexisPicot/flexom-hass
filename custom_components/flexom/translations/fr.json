@@ -18,5 +18,26 @@
     "abort": {
       "already_configured": "L'appareil est déjà configuré"
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "double_click_window_ms": "Fenêtre de double-clic (ms)"
+        },
+        "data_description": {
+          "double_click_window_ms": "Délai maximum entre deux appuis sur le même bouton d'un interrupteur pour que ce soit compté comme un double-clic."
+        }
+      }
+    }
+  },
+  "device_automation": {
+    "trigger_type": {
+      "top_left": "« {entity_name} » bouton haut-gauche appuyé",
+      "bottom_left": "« {entity_name} » bouton bas-gauche appuyé",
+      "top_right": "« {entity_name} » bouton haut-droit appuyé",
+      "bottom_right": "« {entity_name} » bouton bas-droit appuyé",
+      "stop": "« {entity_name} » deux boutons appuyés (stop)"
+    }
   }
 }

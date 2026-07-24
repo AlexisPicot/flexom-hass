@@ -18,5 +18,26 @@
     "abort": {
       "already_configured": "Device is already configured"
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "double_click_window_ms": "Double-click window (ms)"
+        },
+        "data_description": {
+          "double_click_window_ms": "Maximum delay between two presses of the same wall switch button for it to count as a double click."
+        }
+      }
+    }
+  },
+  "device_automation": {
+    "trigger_type": {
+      "top_left": "\"{entity_name}\" top-left button pressed",
+      "bottom_left": "\"{entity_name}\" bottom-left button pressed",
+      "top_right": "\"{entity_name}\" top-right button pressed",
+      "bottom_right": "\"{entity_name}\" bottom-right button pressed",
+      "stop": "\"{entity_name}\" both buttons pressed (stop)"
+    }
   }
 }
