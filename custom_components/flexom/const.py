@@ -43,3 +43,38 @@ SWS_EVENT_NAMES: Final = {
     SWS_BOTTOM_RIGHT: "bottom_right",
     SWS_STOP: "stop",
 }
+
+FACTOR_EVENTS: Final = "EVTS"  # Nom de l'action déclenchée par un interrupteur
+
+# Valeurs EVTS confirmées empiriquement (docs/ubiant/OBSERVED.md, sessions
+# 2026-07-23/24) : contrairement à SWS, EVTS ne se déclenche PAS à chaque
+# appui (conditionné, semble-t-il, à une vraie transition d'état de
+# l'actionneur visé) - à traiter comme un signal bonus, jamais requis.
+EVTS_BRI_OFF: Final = "BRI_OFF_SWS"
+EVTS_BRI_ON: Final = "BRI_ON_SWS"
+EVTS_BRIEXT_ON: Final = "BRIEXT_ON_SWS"  # volet : ouverture commandée
+EVTS_BRIEXT_OFF: Final = "BRIEXT_OFF_SWS"  # volet : fermeture commandée
+
+# Mapping EVTS -> event_type SWS_EVENT_NAMES correspondant, pour pouvoir
+# aussi déclencher un event.py depuis un EVTS seul (pas seulement en
+# confirmation d'un SWS déjà traité). Pas d'entrée pour "stop" : ce n'est
+# pas une transition de facteur, EVTS ne peut donc jamais le représenter.
+EVTS_TO_EVENT_TYPE: Final = {
+    EVTS_BRI_OFF: SWS_EVENT_NAMES[SWS_TOP_LEFT],
+    EVTS_BRI_ON: SWS_EVENT_NAMES[SWS_BOTTOM_LEFT],
+    EVTS_BRIEXT_ON: SWS_EVENT_NAMES[SWS_TOP_RIGHT],
+    EVTS_BRIEXT_OFF: SWS_EVENT_NAMES[SWS_BOTTOM_RIGHT],
+}
+
+# Combien de temps sans nouveau tick de position avant de considérer qu'un
+# volet a fini de bouger, une fois qu'une divergence a déjà été constatée
+# (voir cover.py). Doit rester nettement au-dessus de l'écart réel entre
+# deux ticks BRIEXT pendant un vrai trajet (confirmé live : jusqu'à ~9-11s
+# d'écart, docs/ubiant/OBSERVED.md) sous peine de déclarer le mouvement fini
+# entre deux ticks légitimes.
+COVER_MOVEMENT_SETTLE_SECONDS: Final = 10
+
+# Fenêtre de corrélation entre un SWS et un EVTS décrivant potentiellement le
+# même appui (les deux n'arrivent jamais exactement au même timestamp, cf.
+# docs/ubiant/OBSERVED.md).
+EVTS_CORRELATION_WINDOW_MS: Final = 3000

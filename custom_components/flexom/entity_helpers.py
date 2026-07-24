@@ -154,6 +154,30 @@ def extract_sensor_value(message: Dict[str, Any], it_id: str, factor_id: str) ->
         return None
 
 
+def extract_zone_evts(message: Dict[str, Any], zone_id: str) -> Optional[str]:
+    """Return the EVTS action name if `message` is an EVTS update for this zone, else None.
+
+    Confirmed live (docs/ubiant/OBSERVED.md): unlike SWS (which fires on
+    every press), EVTS only appears sometimes - apparently conditioned on an
+    actual resulting factor transition, not a fixed function of the press.
+    EVTS also has no itId, only a zoneId, e.g.:
+
+        {"type": "FACTOR_CURRENT_STATE", "zoneId": "chambre2_lh95rqf7",
+         "factorId": "EVTS", "value": "BRIEXT_ON_SWS"}
+
+    so it can identify *which zone* acted but never *which physical device*
+    within that zone - callers must account for that ambiguity themselves.
+    """
+    if (
+        message.get("type") != "FACTOR_CURRENT_STATE"
+        or message.get("zoneId") != zone_id
+        or message.get("factorId") != "EVTS"
+    ):
+        return None
+    value = message.get("value")
+    return value if isinstance(value, str) else None
+
+
 def extract_switch_press(message: Dict[str, Any], it_id: str) -> Optional[int]:
     """Return the SWS press value (1-5) if `message` is a press from this switch, else None.
 

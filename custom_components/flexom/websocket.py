@@ -212,7 +212,7 @@ class HemisWebSocketClient:
                         log_msg = message_str[:100] + "..."
                     else:
                         log_msg = message_str
-                        
+
                     _LOGGER.debug("Received WebSocket message: %s", log_msg)
                     
                     if message_str.startswith("MESSAGE"):
