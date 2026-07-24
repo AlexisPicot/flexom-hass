@@ -1,7 +1,10 @@
 {
   "domain": "flexom",
   "name": "Flexom-HASS",
-  "codeowners": ["@AlexisPicot", "@ItsAlexousd"],
+  "codeowners": [
+    "@AlexisPicot",
+    "@ItsAlexousd"
+  ],
   "config_flow": true,
   "documentation": "https://github.com/AlexisPicot/flexom-hass",
   "iot_class": "cloud_push",
@@ -10,5 +13,5 @@
     "stomper>=0.4.3",
     "websockets>=10.0"
   ],
-  "version": "0.2.0"
+  "version": "0.2.1"
 }
