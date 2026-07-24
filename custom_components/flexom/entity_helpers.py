@@ -179,7 +179,7 @@ def extract_zone_evts(message: Dict[str, Any], zone_id: str) -> Optional[str]:
 
 
 def extract_switch_press(message: Dict[str, Any], it_id: str) -> Optional[int]:
-    """Return the SWS press value (1-5) if `message` is a press from this switch, else None.
+    """Return the SWS press value (1-6) if `message` is a press from this switch, else None.
 
     Confirmed live (docs/ubiant/OBSERVED.md): a physical switch press is a
     SENSOR_STATE message carrying the switch's own "itId" (unique per

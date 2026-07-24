@@ -6,7 +6,7 @@ Home Assistant's `event` domain (built for stateless button-press-style
 events), not `switch` (which implies a durable on/off state).
 
 One `event` entity is exposed per physical switch (not one per button):
-each switch has up to 5 distinct actions, reported as different event_types
+each switch has up to 6 distinct actions, reported as different event_types
 on the same entity - see FlexomSwitchEvent's docstring.
 """
 from __future__ import annotations
@@ -110,7 +110,8 @@ class FlexomSwitchEvent(CoordinatorEntity, EventEntity):
         SWS=2 bottom_left   (wired to: light on)
         SWS=3 top_right    (wired to: shutter open)
         SWS=4 bottom_right  (wired to: shutter closed)
-        SWS=5 stop          (both buttons on one side pressed together)
+        SWS=5 release_top      (both TOP buttons pressed together)
+        SWS=6 release_bottom   (both BOTTOM buttons pressed together)
 
     This mapping was confirmed on one switch model - physical button
     position may not match 1:1 across different models, only the reported
@@ -140,9 +141,10 @@ class FlexomSwitchEvent(CoordinatorEntity, EventEntity):
     - If it shows up with no correlated SWS at all, it's used to fire the
       event on its own, purely as a safety net - but only in zones with a
       single switch (EVTS carries no itId, so a second switch in the same
-      zone would make the attribution ambiguous), and never for "stop"
-      (EVTS_TO_EVENT_TYPE has no entry for it - a stop is not a factor
-      transition, so it could never be reported as one).
+      zone would make the attribution ambiguous), and never for
+      "release_top"/"release_bottom" (EVTS_TO_EVENT_TYPE has no entry for
+      either - a release is not a factor transition, so it could never be
+      reported as one).
     """
 
     _attr_event_types = list(SWS_EVENT_NAMES.values())

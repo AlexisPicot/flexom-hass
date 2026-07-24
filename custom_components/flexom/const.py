@@ -26,22 +26,24 @@ FACTOR_TEMPERATURE: Final = "TMP"  # Température
 FACTOR_SWITCH: Final = "SWS"  # Appui sur un interrupteur physique
 
 # Valeurs du facteur SWS, confirmées empiriquement (docs/ubiant/OBSERVED.md,
-# session du 2026-07-23) : chaque appui envoie un pulse valeur -> 0. Nommage
-# positionnel (top_left/bottom_left/top_right/bottom_right/stop) plutôt que
-# fonctionnel (light_off/light_on/...) : décrit ce que le bouton physique
-# fait, indépendamment de l'action Ubiant qui y est câblée.
+# sessions du 2026-07-23/24) : chaque appui envoie un pulse valeur -> 0.
+# Nommage positionnel (top_left/bottom_left/top_right/bottom_right/release)
+# plutôt que fonctionnel (light_off/light_on/...) : décrit ce que le bouton
+# physique fait, indépendamment de l'action Ubiant qui y est câblée.
 SWS_TOP_LEFT: Final = 1  # éteindre la lumière
 SWS_BOTTOM_LEFT: Final = 2  # allumer la lumière
 SWS_TOP_RIGHT: Final = 3  # ouvrir le volet
 SWS_BOTTOM_RIGHT: Final = 4  # fermer le volet
-SWS_STOP: Final = 5  # appui simultané des deux boutons d'un même côté
+SWS_RELEASE_TOP: Final = 5  # appui simultané des deux boutons du HAUT
+SWS_RELEASE_BOTTOM: Final = 6  # appui simultané des deux boutons du BAS
 
 SWS_EVENT_NAMES: Final = {
     SWS_TOP_LEFT: "top_left",
     SWS_BOTTOM_LEFT: "bottom_left",
     SWS_TOP_RIGHT: "top_right",
     SWS_BOTTOM_RIGHT: "bottom_right",
-    SWS_STOP: "stop",
+    SWS_RELEASE_TOP: "release_top",
+    SWS_RELEASE_BOTTOM: "release_bottom",
 }
 
 FACTOR_EVENTS: Final = "EVTS"  # Nom de l'action déclenchée par un interrupteur
@@ -57,7 +59,7 @@ EVTS_BRIEXT_OFF: Final = "BRIEXT_OFF_SWS"  # volet : fermeture commandée
 
 # Mapping EVTS -> event_type SWS_EVENT_NAMES correspondant, pour pouvoir
 # aussi déclencher un event.py depuis un EVTS seul (pas seulement en
-# confirmation d'un SWS déjà traité). Pas d'entrée pour "stop" : ce n'est
+# confirmation d'un SWS déjà traité). Pas d'entrée pour "release" : ce n'est
 # pas une transition de facteur, EVTS ne peut donc jamais le représenter.
 EVTS_TO_EVENT_TYPE: Final = {
     EVTS_BRI_OFF: SWS_EVENT_NAMES[SWS_TOP_LEFT],
