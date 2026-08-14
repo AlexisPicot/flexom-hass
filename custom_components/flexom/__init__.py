@@ -114,6 +114,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "to setup but may not receive real-time updates. "
             "This will be retried automatically in the background."
         )
+        # Ensure should_run is True so reconnect() doesn't bail out immediately.
+        ws_client.should_run = True
         hass.async_create_task(ws_client.reconnect())
     else:
         await ws_client.start_listening()

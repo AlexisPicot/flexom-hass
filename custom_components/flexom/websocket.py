@@ -50,11 +50,25 @@ class HemisWebSocketClient:
         self.ws: Optional[websockets.WebSocketClientProtocol] = None
         self.task: Optional[asyncio.Task] = None
         self.heartbeat_task: Optional[asyncio.Task] = None
-        self.is_running = False
+        # should_run: explicit intent — True until disconnect() is called.
+        # is_running: kept as an alias for backward compat (reflects should_run).
+        self.should_run = False
         self.subscription_id = "1"
         self.connection_id = None
         self.reconnect_interval = reconnect_interval
-        self.last_received = 0
+        self.last_received: float = 0
+        self._reconnect_lock = asyncio.Lock()
+        self.reconnect_count: int = 0
+        self.last_disconnect_reason: Optional[str] = None
+
+    @property
+    def is_running(self) -> bool:
+        """True when the client is supposed to be running (intent flag)."""
+        return self.should_run
+
+    @is_running.setter
+    def is_running(self, value: bool) -> None:
+        self.should_run = value
 
     async def connect(self) -> bool:
         """Connect to the WebSocket server."""
@@ -130,9 +144,9 @@ class HemisWebSocketClient:
             subscribe_str = subscribe_frame.pack()
             await self.ws.send(subscribe_str)
             
-            # Start heartbeat task
-            if self.heartbeat_task is None:
-                self.heartbeat_task = asyncio.create_task(self._send_heartbeats())
+            # Start heartbeat task (only if not already running)
+            if self.heartbeat_task is None or self.heartbeat_task.done():
+                self.heartbeat_task = self.hass.async_create_task(self._send_heartbeats())
             
             _LOGGER.info("Connected to Hemis WebSocket and subscribed to topics")
             return True
@@ -143,22 +157,23 @@ class HemisWebSocketClient:
 
     async def disconnect(self) -> None:
         """Disconnect from the WebSocket server."""
-        if self.heartbeat_task:
+        self.should_run = False
+
+        if self.heartbeat_task and not self.heartbeat_task.done():
             self.heartbeat_task.cancel()
             try:
                 await self.heartbeat_task
             except asyncio.CancelledError:
                 pass
-            self.heartbeat_task = None
+        self.heartbeat_task = None
             
-        if self.task:
-            self.is_running = False
+        if self.task and not self.task.done():
             self.task.cancel()
             try:
                 await self.task
             except asyncio.CancelledError:
                 pass
-            self.task = None
+        self.task = None
         
         if self.ws:
             # Send STOMP DISCONNECT frame
@@ -178,11 +193,11 @@ class HemisWebSocketClient:
 
     async def start_listening(self) -> None:
         """Start listening for messages."""
-        if self.task:
+        if self.task is not None and not self.task.done():
             return
         
-        self.is_running = True
-        self.task = asyncio.create_task(self._listen())
+        self.should_run = True
+        self.task = self.hass.async_create_task(self._listen())
 
     async def _listen(self) -> None:
         """Listen for messages."""
@@ -193,7 +208,7 @@ class HemisWebSocketClient:
         try:
             self.last_received = time.time()
             
-            while self.is_running:
+            while self.should_run:
                 try:
                     message = await asyncio.wait_for(self.ws.recv(), timeout=30)
                     self.last_received = time.time()
@@ -253,8 +268,8 @@ class HemisWebSocketClient:
                     
                     elif message_str.startswith("ERROR"):
                         _LOGGER.error("STOMP error: %s", message_str)
-                        # Try to reconnect if we get an error
-                        self.is_running = False
+                        # Trigger reconnection without clearing should_run
+                        self.last_disconnect_reason = "STOMP ERROR frame"
                         break
                         
                     elif message_str.startswith("RECEIPT"):
@@ -276,24 +291,31 @@ class HemisWebSocketClient:
                             _LOGGER.debug("Sent heartbeat")
                         except Exception as err:
                             _LOGGER.error("Error sending heartbeat: %s", str(err))
+                            self.last_disconnect_reason = f"heartbeat send error: {err}"
                             break
                 
                 except Exception as e:
                     _LOGGER.error("WebSocket listen error: %s", str(e))
-                    # Break the loop if we get an error to trigger reconnection
+                    self.last_disconnect_reason = f"listen error: {e}"
+                    # Break the loop to trigger reconnection
                     break
             
             _LOGGER.debug("WebSocket listener stopped")
             
-            # Start reconnection process if we're still supposed to be running
-            if self.is_running:
+            # Trigger reconnection if the client is still supposed to be running
+            if self.should_run:
                 self.ws = None
                 _LOGGER.info("WebSocket connection lost, will attempt to reconnect")
-                asyncio.create_task(self.reconnect())
+                self.hass.async_create_task(self.reconnect())
                 
         except Exception as e:
             _LOGGER.error("Fatal error in WebSocket listener: %s", str(e), exc_info=True)
-            self.is_running = False
+            # Do NOT clear should_run — a network error must not permanently
+            # prevent future reconnections.
+        finally:
+            # Always clear the task reference so start_listening() can create a
+            # new one after this coroutine exits.
+            self.task = None
 
     async def _send_heartbeats(self) -> None:
         """Send heartbeats to keep the connection alive."""
@@ -311,6 +333,9 @@ class HemisWebSocketClient:
             _LOGGER.debug("Heartbeat task cancelled")
         except Exception as err:
             _LOGGER.error("Error in heartbeat task: %s", err)
+        finally:
+            # Clear the reference so connect() can create a new heartbeat task.
+            self.heartbeat_task = None
             
     def update_token(self, new_token: str) -> None:
         """Update the authentication token."""
@@ -319,46 +344,72 @@ class HemisWebSocketClient:
 
     async def reconnect(self):
         """Reconnect to the websocket server."""
-        if not self.is_running:
+        if not self.should_run:
+            _LOGGER.debug("reconnect() called but should_run=False; skipping")
             return
-            
-        _LOGGER.info("Reconnecting to Hemis WebSocket")
-        
-        # Close existing connection if it exists
-        if self.ws:
-            try:
-                await self.ws.close()
-            except Exception:
-                pass
-            self.ws = None
-        
-        # Try to connect
-        for retry_count in range(5):  # Try 5 times
-            _LOGGER.debug("Reconnection attempt %d/5", retry_count + 1)
-            
-            # Attempt to reconnect
-            success = await self.connect()
-            
-            if success:
-                _LOGGER.info("Successfully reconnected to Hemis WebSocket")
-                # Start listening
-                await self.start_listening()
-                return
-                
-            # Wait between retries, increasing the wait time
-            wait_time = (retry_count + 1) * 10  # 10, 20, 30, 40, 50 seconds
+
+        # Prevent concurrent reconnect attempts (e.g. triggered by both
+        # the listener and the heartbeat task dying at the same time).
+        if self._reconnect_lock.locked():
+            _LOGGER.debug("Reconnect already in progress; skipping duplicate call")
+            return
+
+        async with self._reconnect_lock:
+            _LOGGER.info("Reconnecting to Hemis WebSocket")
+            self.reconnect_count += 1
+
+            # Cancel and clean up heartbeat before tearing down the socket.
+            if self.heartbeat_task and not self.heartbeat_task.done():
+                self.heartbeat_task.cancel()
+                try:
+                    await self.heartbeat_task
+                except asyncio.CancelledError:
+                    pass
+            self.heartbeat_task = None
+
+            # Close existing connection if it exists
+            if self.ws:
+                try:
+                    await self.ws.close()
+                except Exception:
+                    pass
+                self.ws = None
+
+            # Try to connect
+            for retry_count in range(5):  # Try 5 times
+                if not self.should_run:
+                    _LOGGER.debug("should_run cleared during reconnect; aborting")
+                    return
+
+                _LOGGER.debug("Reconnection attempt %d/5", retry_count + 1)
+
+                # Attempt to reconnect
+                success = await self.connect()
+
+                if success:
+                    _LOGGER.info("Successfully reconnected to Hemis WebSocket")
+                    # Start listening (creates a new task if the old one is done)
+                    await self.start_listening()
+                    return
+
+                # Wait between retries, increasing the wait time
+                wait_time = (retry_count + 1) * 10  # 10, 20, 30, 40, 50 seconds
+                _LOGGER.error(
+                    "Failed to reconnect to Hemis WebSocket, will retry in %s seconds (attempt %s/5)",
+                    wait_time,
+                    retry_count + 1
+                )
+                await asyncio.sleep(wait_time)
+
+            # If we get here, all reconnection attempts failed
             _LOGGER.error(
-                "Failed to reconnect to Hemis WebSocket, will retry in %s seconds (attempt %s/5)", 
-                wait_time, 
-                retry_count + 1
+                "Failed to reconnect to Hemis WebSocket after 5 attempts. "
+                "Will try again in %s seconds",
+                self.reconnect_interval
             )
-            await asyncio.sleep(wait_time)
-        
-        # If we get here, all reconnection attempts failed
-        _LOGGER.error(
-            "Failed to reconnect to Hemis WebSocket after 5 attempts. "
-            "Will try again in %s seconds", 
-            self.reconnect_interval
-        )
-        await asyncio.sleep(self.reconnect_interval)
-        asyncio.create_task(self.reconnect())
+
+        # Schedule next attempt outside the lock so a parallel call can take
+        # over if needed.
+        if self.should_run:
+            await asyncio.sleep(self.reconnect_interval)
+            self.hass.async_create_task(self.reconnect())
