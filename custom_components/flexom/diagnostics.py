@@ -6,6 +6,7 @@ needing to dig through home-assistant.log.
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from homeassistant.components.diagnostics import async_redact_data
@@ -37,7 +38,17 @@ async def async_get_config_entry_diagnostics(
         },
         "websocket": {
             "connected": ws_client.ws is not None,
-            "listening": ws_client.is_running,
+            "listening": ws_client.should_run,
+            "listener_task_done": ws_client.task is None or ws_client.task.done(),
+            "heartbeat_task_done": ws_client.heartbeat_task is None or ws_client.heartbeat_task.done(),
+            "last_received": ws_client.last_received,
+            "seconds_since_last_message": (
+                round(time.time() - ws_client.last_received, 1)
+                if ws_client.last_received
+                else None
+            ),
+            "reconnect_count": ws_client.reconnect_count,
+            "last_disconnect_reason": ws_client.last_disconnect_reason,
         },
         "coordinator": {
             "last_update_success": coordinator.last_update_success,
