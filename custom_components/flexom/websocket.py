@@ -401,15 +401,16 @@ class HemisWebSocketClient:
                 )
                 await asyncio.sleep(wait_time)
 
-            # If we get here, all reconnection attempts failed
+            # If we get here, all reconnection attempts failed.  Hold the lock
+            # through the back-off sleep so that duplicate reconnect() calls
+            # scheduled while we sleep are rejected by the locked() check.
             _LOGGER.error(
                 "Failed to reconnect to Hemis WebSocket after 5 attempts. "
                 "Will try again in %s seconds",
                 self.reconnect_interval
             )
-
-        # Schedule next attempt outside the lock so a parallel call can take
-        # over if needed.
-        if self.should_run:
             await asyncio.sleep(self.reconnect_interval)
+
+        # Schedule the next attempt after releasing the lock.
+        if self.should_run:
             self.hass.async_create_task(self.reconnect())
