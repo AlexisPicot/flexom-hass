@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import timedelta
 from typing import Any, Dict, List
 
@@ -31,7 +32,12 @@ PLATFORMS = [
     Platform.COVER,
     Platform.CLIMATE,
     Platform.EVENT,
+    Platform.BINARY_SENSOR,
 ]
+
+# How often to verify the Hemis REST API is still reachable, independent of
+# the WebSocket - powers binary_sensor.py's "Hemis API reachable" entity.
+API_HEALTH_CHECK_INTERVAL = timedelta(minutes=2)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -153,6 +159,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(
         async_track_time_interval(hass, _refresh_token_if_needed, timedelta(minutes=15))
     )
+
+    async def _check_api_reachability(_now) -> None:
+        """Verify the Hemis REST API is reachable, independent of the WebSocket.
+
+        Powers binary_sensor.py's "Hemis API reachable" entity. Uses
+        get_zones() - the same lightweight call handle_run_diagnostic()
+        already relies on for this - rather than adding tracking to
+        _api_call itself, since a quiet_404 there (a zone legitimately
+        having no actuator for a factor) must not be counted as an outage.
+        """
+        zones = await hemis_client.get_zones()
+        hemis_client.last_api_call_ok = zones is not None
+        hemis_client.last_api_call_time = time.time()
+
+    entry.async_on_unload(
+        async_track_time_interval(hass, _check_api_reachability, API_HEALTH_CHECK_INTERVAL)
+    )
+    # Run once immediately so the binary_sensor isn't stuck at "unknown"
+    # until the first interval elapses.
+    hass.async_create_task(_check_api_reachability(None))
 
     async def handle_reconnect_websocket(_call) -> None:
         """Manually force a WebSocket reconnect (service: flexom.reconnect_websocket)."""

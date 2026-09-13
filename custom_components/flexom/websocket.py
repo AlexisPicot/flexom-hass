@@ -29,6 +29,20 @@ EVENT_TYPES = [
     "ENTITY_MANAGEMENT",
 ]
 
+# How many *consecutive* reconnect cycles (each cycle = up to 5 attempts,
+# ~150s of backoff) get logged loudly (ERROR/INFO) before falling back to
+# DEBUG + an occasional WARNING reminder. Confirmed live: a real outage on
+# Ubiant's side (STOMP ingress returning a bare 404) can last many hours,
+# and logging every single attempt at ERROR for that whole time floods
+# home-assistant.log without adding information after the first few
+# minutes already made the problem obvious.
+LOUD_RECONNECT_CYCLES = 3
+# Once past LOUD_RECONNECT_CYCLES, only log a WARNING-level "still down"
+# reminder every this-many cycles (~35 minutes at the default 60s
+# reconnect_interval); every other cycle logs at DEBUG only.
+RECONNECT_REMINDER_EVERY = 10
+
+
 class HemisWebSocketClient:
     """WebSocket client for Hemis."""
 
@@ -60,6 +74,17 @@ class HemisWebSocketClient:
         self._reconnect_lock = asyncio.Lock()
         self.reconnect_count: int = 0
         self.last_disconnect_reason: Optional[str] = None
+        # Consecutive reconnect() cycles since the last successful
+        # connection - unlike reconnect_count (a lifetime total, kept as-is
+        # for diagnostics.py), this resets to 0 on success so a *new*
+        # outage after a period of being healthy is loud again. Drives the
+        # log-verbosity backoff in connect()/reconnect() below.
+        self._consecutive_outage_cycles: int = 0
+
+    def _log_connection_issue(self, loud_level: int, quiet_level: int, msg: str, *args: Any) -> None:
+        """Log at `loud_level` for the first few outage cycles, `quiet_level` after."""
+        level = loud_level if self._consecutive_outage_cycles <= LOUD_RECONNECT_CYCLES else quiet_level
+        _LOGGER.log(level, msg, *args)
 
     @property
     def is_running(self) -> bool:
@@ -149,10 +174,13 @@ class HemisWebSocketClient:
                 self.heartbeat_task = self.hass.async_create_task(self._send_heartbeats())
             
             _LOGGER.info("Connected to Hemis WebSocket and subscribed to topics")
+            self._consecutive_outage_cycles = 0
             return True
-            
+
         except Exception as err:
-            _LOGGER.error("Error connecting to Hemis WebSocket: %s", err)
+            self._log_connection_issue(
+                logging.ERROR, logging.DEBUG, "Error connecting to Hemis WebSocket: %s", err
+            )
             return False
 
     async def disconnect(self) -> None:
@@ -355,8 +383,9 @@ class HemisWebSocketClient:
             return
 
         async with self._reconnect_lock:
-            _LOGGER.info("Reconnecting to Hemis WebSocket")
             self.reconnect_count += 1
+            self._consecutive_outage_cycles += 1
+            self._log_connection_issue(logging.INFO, logging.DEBUG, "Reconnecting to Hemis WebSocket")
 
             # Cancel and clean up heartbeat before tearing down the socket.
             if self.heartbeat_task and not self.heartbeat_task.done():
@@ -394,7 +423,9 @@ class HemisWebSocketClient:
 
                 # Wait between retries, increasing the wait time
                 wait_time = (retry_count + 1) * 10  # 10, 20, 30, 40, 50 seconds
-                _LOGGER.error(
+                self._log_connection_issue(
+                    logging.ERROR,
+                    logging.DEBUG,
                     "Failed to reconnect to Hemis WebSocket, will retry in %s seconds (attempt %s/5)",
                     wait_time,
                     retry_count + 1
@@ -404,11 +435,26 @@ class HemisWebSocketClient:
             # If we get here, all reconnection attempts failed.  Hold the lock
             # through the back-off sleep so that duplicate reconnect() calls
             # scheduled while we sleep are rejected by the locked() check.
-            _LOGGER.error(
-                "Failed to reconnect to Hemis WebSocket after 5 attempts. "
-                "Will try again in %s seconds",
-                self.reconnect_interval
-            )
+            if self._consecutive_outage_cycles <= LOUD_RECONNECT_CYCLES:
+                _LOGGER.error(
+                    "Failed to reconnect to Hemis WebSocket after 5 attempts. "
+                    "Will try again in %s seconds",
+                    self.reconnect_interval
+                )
+            elif self._consecutive_outage_cycles % RECONNECT_REMINDER_EVERY == 0:
+                _LOGGER.warning(
+                    "Hemis WebSocket still unreachable after %d reconnect cycles "
+                    "(last error: %s). Still retrying every %s seconds.",
+                    self._consecutive_outage_cycles,
+                    self.last_disconnect_reason,
+                    self.reconnect_interval
+                )
+            else:
+                _LOGGER.debug(
+                    "Failed to reconnect to Hemis WebSocket after 5 attempts. "
+                    "Will try again in %s seconds",
+                    self.reconnect_interval
+                )
             await asyncio.sleep(self.reconnect_interval)
 
         # Schedule the next attempt after releasing the lock.

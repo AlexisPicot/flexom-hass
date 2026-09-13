@@ -31,6 +31,14 @@ class HemisApiClient:
         self.hemis_base_url = hemis_base_url
         self.token = token
         self.buildingId = buildingId
+        # Powers the "Hemis API reachable" diagnostic binary_sensor
+        # (binary_sensor.py) - set by __init__.py's periodic health check,
+        # not by _api_call itself (a quiet_404 there is a normal "nothing at
+        # this zone/factor" response, not a reachability failure, so folding
+        # tracking into _api_call's many return points would misreport
+        # those as outages).
+        self.last_api_call_ok: Optional[bool] = None
+        self.last_api_call_time: Optional[float] = None
 
     async def get_zones(self) -> List[Dict[str, Any]]:
         """Get all zones."""
